@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/klog/v2"
 
@@ -64,10 +65,15 @@ func roundDownCapacityPretty(capacityBytes int64) int64 {
 	return capacityBytes
 }
 
-// CreateVolume allocates creates the directory for the hostpath volume
+// CreateSnapshotDirectory allocates creates the directory for the hostpath snapshot
 //
 // It returns the err if one occurs. That error is suitable as result of a gRPC call.
-func CreateVolume(base, volID string) error {
+func CreateSnapshotDirectory(base, snapID string) error {
+	return CreateVolumeDirectory(base, snapID)
+}
+
+// It returns the err if one occurs. That error is suitable as result of a gRPC call.
+func createVolumeDirectoryFunc(base, volID string) error {
 	path := filepath.Join(base, volID)
 
 	err := os.MkdirAll(path, 0777)
@@ -79,6 +85,8 @@ func CreateVolume(base, volID string) error {
 }
 
 // DeleteVolume deletes the directory for the hostpath volume.
+//
+// It returns the err if one occurs. That error is suitable as result of a gRPC call.
 func DeleteVolume(base, volID string) error {
 	klog.V(4).Infof("starting to delete hostpath volume: %s", volID)
 
@@ -100,7 +108,17 @@ func IndexOfStartingToken(value string, list []string) int {
 	return -1
 }
 
-func checkPathExist(path string) (bool, error) {
+// IndexOfSnapshotId returns the index of a matching snapshotId, or -1 if not found
+func IndexOfSnapshotId(value string, list []csi.Snapshot) int {
+	for i, match := range list {
+		if match.SnapshotId == value {
+			return i
+		}
+	}
+	return -1
+}
+
+func checkPathExistFunc(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {

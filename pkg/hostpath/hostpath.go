@@ -20,7 +20,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+<<<<<<< HEAD
 	"time"
+=======
+	"path/filepath"
+>>>>>>> bf67b2c (Add snapshot support for single node.)
 
 	"golang.org/x/net/context"
 	klog "k8s.io/klog/v2"
@@ -41,6 +45,7 @@ type Config struct {
 	Endpoint               string
 	NodeID                 string
 	StoragePoolDataDir     map[string]string
+	SnapshotDir			  string
 	DefaultStoragePoolName string
 	Version                string
 	Mounter                mount.Interface
@@ -77,7 +82,7 @@ func NewHostPathDriver(ctx context.Context, cfg *Config, dataDir string) (*hostP
 	if err := json.Unmarshal([]byte(dataDir), &storagePools); err != nil {
 		return nil, errors.New("unable to parse storage pool info")
 	}
-	for _, storagePool := range storagePools {
+	for storagePool := range storagePools {
 		if len(cfg.DefaultStoragePoolName) == 0 {
 			cfg.DefaultStoragePoolName = storagePool.Name
 		}
@@ -103,6 +108,12 @@ func NewHostPathDriver(ctx context.Context, cfg *Config, dataDir string) (*hostP
 			}
 		}
 	}()
+
+	// TODO: Integrate with storage pools
+	cfg.SnapshotDir = filepath.Join(cfg.DataDir, "snapshot")
+	if err := os.MkdirAll(cfg.SnapshotDir, 0750); err != nil {
+		return nil, fmt.Errorf("failed to create snapshot root: %v", err)
+	}
 
 	klog.V(1).Infof("Driver: %s, version: %s ", cfg.DriverName, cfg.Version)
 
