@@ -39,6 +39,7 @@ func main() {
 	flag.StringVar(&dataDir, "datadir", "[{\"name\":\"legacy\",\"path\":\"/csi-data-dir\"}]", "storage pool name/path tupels that indicate which storage pool name is associated with which path, in JSON format. Example: [{\"name\":\"legacy\",\"path\":\"/csi-data-dir\"}]")
 	flag.StringVar(&cfg.NodeID, "nodeid", "", "node id")
 	flag.StringVar(&cfg.Version, "version", "", "version of the plugin")
+	flag.StringVar(&cfg.SnapshotRepoPasswordFile, "snapshot-repo-passwordfile", "", "password file containing the password to access the snapshot repo")
 	flag.Parse()
 
 	klog.V(1).Info("Starting Prometheus metrics endpoint server")

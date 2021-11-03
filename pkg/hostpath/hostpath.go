@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,11 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-<<<<<<< HEAD
-	"time"
-=======
 	"path/filepath"
->>>>>>> bf67b2c (Add snapshot support for single node.)
+	"time"
 
 	"golang.org/x/net/context"
 	klog "k8s.io/klog/v2"
@@ -41,14 +38,15 @@ const (
 )
 
 type Config struct {
-	DriverName             string
-	Endpoint               string
-	NodeID                 string
-	StoragePoolDataDir     map[string]string
-	SnapshotDir			  string
-	DefaultStoragePoolName string
-	Version                string
-	Mounter                mount.Interface
+	DriverName               string
+	Endpoint                 string
+	NodeID                   string
+	StoragePoolDataDir       map[string]string
+	SnapshotDir              string
+	DefaultStoragePoolName   string
+	Version                  string
+	Mounter                  mount.Interface
+	SnapshotRepoPasswordFile string
 }
 
 type hostPath struct {
@@ -77,6 +75,22 @@ func NewHostPathDriver(ctx context.Context, cfg *Config, dataDir string) (*hostP
 		cfg.Mounter = mount.New("")
 	}
 	cfg.StoragePoolDataDir = make(map[string]string)
+	if cfg.SnapshotRepoPasswordFile == "" {
+		cfg.SnapshotRepoPasswordFile = filepath.Join(cfg.DataDir, "pwd.txt")
+		f, err := os.Create(cfg.SnapshotRepoPasswordFile)
+		if err != nil {
+			return nil, err
+		}
+		_, err = f.WriteString("test-password")
+		if err != nil {
+			return nil, err
+		}
+		err = f.Sync()
+		if err != nil {
+			return nil, err
+		}
+		//return nil, errors.New("no snapshot repo password file provided")
+	}
 
 	storagePools := make([]StoragePoolInfo, 0)
 	if err := json.Unmarshal([]byte(dataDir), &storagePools); err != nil {
@@ -111,9 +125,6 @@ func NewHostPathDriver(ctx context.Context, cfg *Config, dataDir string) (*hostP
 
 	// TODO: Integrate with storage pools
 	cfg.SnapshotDir = filepath.Join(cfg.DataDir, "snapshot")
-	if err := os.MkdirAll(cfg.SnapshotDir, 0750); err != nil {
-		return nil, fmt.Errorf("failed to create snapshot root: %v", err)
-	}
 
 	klog.V(1).Infof("Driver: %s, version: %s ", cfg.DriverName, cfg.Version)
 

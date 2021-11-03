@@ -29,9 +29,13 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"k8s.io/utils/exec"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+)
+
+const (
+	fileContent = "This is a test file"
 )
 
 func Test_validateCreateVolumeRequest(t *testing.T) {
@@ -224,7 +228,7 @@ func Test_CreateVolumeFromSnapshot(t *testing.T) {
 	Expect(len(resp.Volume.AccessibleTopology)).To(Equal(1))
 	Expect(resp.Volume.AccessibleTopology[0]).ToNot(BeNil())
 	Expect(resp.Volume.AccessibleTopology[0].Segments[TopologyKeyNode]).To(Equal("test_node"))
-
+	controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes = append(controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes, resp.Volume.VolumeId)
 	res, err := controller.CreateSnapshot(context.TODO(), createTestSnapshotRequestWithArgs(validSnapshotName, resp.Volume.VolumeId))
 	Expect(err).ToNot(HaveOccurred())
 	Expect(res.Snapshot).ToNot(BeNil())
@@ -915,17 +919,18 @@ func Test_CreateSnapshotCheckPathError(t *testing.T) {
 	Expect(err).To(HaveOccurred())
 }
 
-func Test_CreateSnapshotNotFoundCreateError(t *testing.T) {
+func Test_CreateSnapshotSourceNotFound(t *testing.T) {
 	RegisterTestingT(t)
 	tempDir, err := ioutil.TempDir(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
+
 	oldCreateVolumeDirectoryFunc := CreateVolumeDirectory
 	defer func() {
 		CreateVolumeDirectory = oldCreateVolumeDirectoryFunc
 	}()
-	req := createTestSnapshotRequest()
+	req := createTestSnapshotRequestWithArgs("test", invalidVolId)
 	CreateVolumeDirectory = func(base, volume string) error {
 		Expect(base).To(Equal(filepath.Join(tempDir, "snap")))
 		Expect(volume).To(Equal(req.GetName()))
@@ -933,25 +938,7 @@ func Test_CreateSnapshotNotFoundCreateError(t *testing.T) {
 	}
 	_, err = controller.CreateSnapshot(context.TODO(), req)
 	Expect(err).To(HaveOccurred())
-	Expect(err.Error()).To(ContainSubstring("failed to create snapshot directory"))
-}
-
-func Test_CreateSnapshotCheckPathIsEmptyError(t *testing.T) {
-	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
-	Expect(err).ToNot(HaveOccurred())
-	defer os.RemoveAll(tempDir)
-	controller := createControllerServer(tempDir)
-	oldCheckPathIsEmptyFunc := checkPathIsEmpty
-	defer func() {
-		checkPathIsEmpty = oldCheckPathIsEmptyFunc
-	}()
-	checkPathIsEmpty = func(path string) (bool, error) {
-		return false, errors.New("test fail")
-	}
-	_, err = controller.CreateSnapshot(context.TODO(), createTestSnapshotRequest())
-	Expect(err).To(HaveOccurred())
-	Expect(err.Error()).To(ContainSubstring("test fail"))
+	Expect(err.Error()).To(ContainSubstring("source volume not found, unable to create snapshot"))
 }
 
 func Test_CreateSnapshotCheckPathIsEmptyNotEmptyOther(t *testing.T) {
@@ -960,66 +947,26 @@ func Test_CreateSnapshotCheckPathIsEmptyNotEmptyOther(t *testing.T) {
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
+	controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes = append(controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes, invalidVolId)
 	err = os.MkdirAll(filepath.Join(controller.cfg.SnapshotDir, validSnapshotName), 0755)
 	Expect(err).ToNot(HaveOccurred())
-	_, err = os.Create(filepath.Join(controller.cfg.SnapshotDir, validSnapshotName, "extra.tar.std"))
+	err = os.MkdirAll(filepath.Join(controller.cfg.DataDir, invalidVolId), 0755)
 	Expect(err).ToNot(HaveOccurred())
+
+	f, err := os.Create(filepath.Join(controller.cfg.DataDir, invalidVolId, "test.file"))
+	Expect(err).ToNot(HaveOccurred())
+	defer f.Close()
+	_, err = f.WriteString(fileContent)
+	Expect(err).ToNot(HaveOccurred())
+
+	err = controller.snapshotprovider.Initialize()
+	Expect(err).ToNot(HaveOccurred())
+
+	_, err = controller.snapshotprovider.CreateSnapshot(validSnapshotName, invalidVolId)
+	Expect(err).ToNot(HaveOccurred())
+
 	_, err = controller.CreateSnapshot(context.TODO(), createTestSnapshotRequest())
-	Expect(err).To(BeEquivalentTo(status.Error(codes.AlreadyExists, "snapshot with the same name: validsnapshot but with different SourceVolumeId already exist")))
-}
-
-func Test_CreateSnapshotCheckPathIsEmptyNotEmptyOtherCheckPathError(t *testing.T) {
-	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
-	Expect(err).ToNot(HaveOccurred())
-	defer os.RemoveAll(tempDir)
-	controller := createControllerServer(tempDir)
-	err = os.MkdirAll(filepath.Join(controller.cfg.SnapshotDir, validSnapshotName), 0755)
-	Expect(err).ToNot(HaveOccurred())
-	_, err = os.Create(filepath.Join(controller.cfg.SnapshotDir, validSnapshotName, "valid.tar.std"))
-	Expect(err).ToNot(HaveOccurred())
-
-	oldcheckPathExistFunc := checkPathExist
-	defer func() {
-		checkPathExist = oldcheckPathExistFunc
-	}()
-	checkPathExist = func(volumePath string) (bool, error) {
-		if volumePath == filepath.Join(controller.cfg.SnapshotDir, validSnapshotName, "valid.tar.std") {
-			return false, errors.New("check file path exists fail")
-		} else {
-			return oldcheckPathExistFunc(volumePath)
-		}
-	}
-	_, err = controller.CreateSnapshot(context.TODO(), createTestSnapshotRequest())
-	Expect(err.Error()).To(ContainSubstring("check file path exists fail"))
-}
-
-func Test_CreateSnapshotCheckPathIsEmptyNotEmptySame(t *testing.T) {
-	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
-	Expect(err).ToNot(HaveOccurred())
-	defer os.RemoveAll(tempDir)
-	controller := createControllerServer(tempDir)
-	err = os.MkdirAll(filepath.Join(controller.cfg.SnapshotDir, validSnapshotName), 0755)
-	Expect(err).ToNot(HaveOccurred())
-
-	f, err := os.Create(filepath.Join(controller.cfg.DataDir, "test.file"))
-	Expect(err).ToNot(HaveOccurred())
-	_, err = f.WriteString("hello\ngo\n")
-	Expect(err).ToNot(HaveOccurred())
-	f.Close()
-
-	cmd := []string{"tar", "-c", "--zstd", "-f", filepath.Join(controller.cfg.SnapshotDir, validSnapshotName, "valid.tar.std"), "-C", controller.cfg.DataDir, "."}
-	executor := exec.New()
-	_, err = executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
-	Expect(err).ToNot(HaveOccurred())
-
-	res, err := controller.CreateSnapshot(context.TODO(), createTestSnapshotRequest())
-	Expect(err).ToNot(HaveOccurred())
-	Expect(res.Snapshot).ToNot(BeNil())
-	Expect(res.Snapshot.SnapshotId).To(Equal(validSnapshotName))
-	Expect(res.Snapshot.ReadyToUse).To(BeTrue())
-	Expect(res.Snapshot.SizeBytes).To(Equal(int64(9)))
+	Expect(err).To(BeEquivalentTo(status.Errorf(codes.AlreadyExists, "snapshot with the same name: validsnapshot but with different SourceVolumeId already exist")))
 }
 
 func Test_CreateSnapshot(t *testing.T) {
@@ -1030,7 +977,10 @@ func Test_CreateSnapshot(t *testing.T) {
 	controller := createControllerServer(tempDir)
 	err = os.MkdirAll(filepath.Join(controller.cfg.DataDir, validVolId), 0755)
 	Expect(err).ToNot(HaveOccurred())
-	_, err = os.Create(filepath.Join(controller.cfg.DataDir, "test.file"))
+	f, err := os.Create(filepath.Join(controller.cfg.DataDir, validVolId, "test.file"))
+	Expect(err).ToNot(HaveOccurred())
+	defer f.Close()
+	_, err = f.WriteString(fileContent)
 	Expect(err).ToNot(HaveOccurred())
 
 	beforeTestTime := time.Now()
@@ -1039,15 +989,8 @@ func Test_CreateSnapshot(t *testing.T) {
 	Expect(res.Snapshot).ToNot(BeNil())
 	Expect(res.Snapshot.SnapshotId).To(Equal(validSnapshotName))
 	Expect(res.Snapshot.ReadyToUse).To(BeTrue())
-	Expect(res.Snapshot.SizeBytes).To(Equal(int64(0)))
+	Expect(res.Snapshot.SizeBytes).To(Equal(int64(len(fileContent))))
 	Expect(res.Snapshot.CreationTime.Seconds).To(BeNumerically(">=", beforeTestTime.Unix()))
-	//Verify the tar file was created
-	exists, err := checkPathExist(filepath.Join(controller.cfg.SnapshotDir, validSnapshotName))
-	Expect(err).ToNot(HaveOccurred())
-	Expect(exists).To(BeTrue())
-	exists, err = checkPathExist(filepath.Join(controller.cfg.SnapshotDir, validSnapshotName, fmt.Sprintf("%s.tar.std", validVolId)))
-	Expect(err).ToNot(HaveOccurred())
-	Expect(exists).To(BeTrue())
 
 	// Test idempotency
 	time.Sleep(time.Second)
@@ -1056,16 +999,8 @@ func Test_CreateSnapshot(t *testing.T) {
 	Expect(err).ToNot(HaveOccurred())
 	Expect(res.Snapshot.SnapshotId).To(Equal(validSnapshotName))
 	Expect(res.Snapshot.ReadyToUse).To(BeTrue())
-	Expect(res.Snapshot.SizeBytes).To(Equal(int64(0)))
+	Expect(res.Snapshot.SizeBytes).To(Equal(int64(len(fileContent))))
 	Expect(res.Snapshot.CreationTime.Seconds).To(Equal(firstTimeStamp))
-	//Verify the tar file was created
-	exists, err = checkPathExist(filepath.Join(controller.cfg.SnapshotDir, validSnapshotName))
-	Expect(err).ToNot(HaveOccurred())
-	Expect(exists).To(BeTrue())
-	exists, err = checkPathExist(filepath.Join(controller.cfg.SnapshotDir, validSnapshotName, fmt.Sprintf("%s.tar.std", validVolId)))
-	Expect(err).ToNot(HaveOccurred())
-	Expect(exists).To(BeTrue())
-
 }
 
 func Test_ValidateDeleteSnapshotRequest(t *testing.T) {
@@ -1089,8 +1024,7 @@ func Test_DeleteSnapshotNotThere(t *testing.T) {
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
-	snapBaseDir := filepath.Join(controller.cfg.DataDir, "snap")
-	err = os.MkdirAll(snapBaseDir, 0755)
+	err = controller.snapshotprovider.Initialize()
 	Expect(err).ToNot(HaveOccurred())
 
 	res, err := controller.DeleteSnapshot(context.TODO(), &csi.DeleteSnapshotRequest{
@@ -1098,9 +1032,6 @@ func Test_DeleteSnapshotNotThere(t *testing.T) {
 	})
 	Expect(err).ToNot(HaveOccurred())
 	Expect(res).ToNot(BeNil())
-	empty, err := checkPathIsEmpty(snapBaseDir)
-	Expect(err).ToNot(HaveOccurred())
-	Expect(empty).To(BeTrue())
 }
 
 func Test_DeleteSnapshot(t *testing.T) {
@@ -1109,22 +1040,28 @@ func Test_DeleteSnapshot(t *testing.T) {
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
-	snapBaseDir := filepath.Join(controller.cfg.DataDir, "snap")
-	err = os.MkdirAll(filepath.Join(snapBaseDir, validSnapshotName), 0755)
+	err = os.MkdirAll(filepath.Join(controller.cfg.DataDir, validVolId), 0755)
+	Expect(err).ToNot(HaveOccurred())
+	f, err := os.Create(filepath.Join(controller.cfg.DataDir, validVolId, "test.file"))
+	Expect(err).ToNot(HaveOccurred())
+	defer f.Close()
+	_, err = f.WriteString(fileContent)
 	Expect(err).ToNot(HaveOccurred())
 
-	empty, err := checkPathIsEmpty(snapBaseDir)
+	beforeTestTime := time.Now()
+	res, err := controller.CreateSnapshot(context.TODO(), createTestSnapshotRequest())
 	Expect(err).ToNot(HaveOccurred())
-	Expect(empty).To(BeFalse())
+	Expect(res.Snapshot).ToNot(BeNil())
+	Expect(res.Snapshot.SnapshotId).To(Equal(validSnapshotName))
+	Expect(res.Snapshot.ReadyToUse).To(BeTrue())
+	Expect(res.Snapshot.SizeBytes).To(Equal(int64(len(fileContent))))
+	Expect(res.Snapshot.CreationTime.Seconds).To(BeNumerically(">=", beforeTestTime.Unix()))
 
-	res, err := controller.DeleteSnapshot(context.TODO(), &csi.DeleteSnapshotRequest{
+	delRes, err := controller.DeleteSnapshot(context.TODO(), &csi.DeleteSnapshotRequest{
 		SnapshotId: validSnapshotName,
 	})
 	Expect(err).ToNot(HaveOccurred())
-	Expect(res).ToNot(BeNil())
-	empty, err = checkPathIsEmpty(snapBaseDir)
-	Expect(err).ToNot(HaveOccurred())
-	Expect(empty).To(BeTrue())
+	Expect(delRes).ToNot(BeNil())
 }
 
 func Test_ListSnapshotsMissingRequest(t *testing.T) {
@@ -1167,7 +1104,7 @@ func Test_ListSnapshotFromSnapshotId(t *testing.T) {
 	Expect(err).To(BeEquivalentTo(status.Errorf(codes.Aborted, "snapshot invalidsnapshot not found")))
 }
 
-func Test_ListSnapshotsFromVolumsSourceId(t *testing.T) {
+func Test_ListSnapshotsFromVolumeSourceId(t *testing.T) {
 	RegisterTestingT(t)
 	tempDir, err := ioutil.TempDir(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
@@ -1246,6 +1183,8 @@ func Test_ListAllSnapshots(t *testing.T) {
 		Expect(err).ToNot(HaveOccurred())
 		_, err = os.Create(filepath.Join(controller.cfg.DataDir, fmt.Sprintf("valid%d", i+1), "test.file"))
 		Expect(err).ToNot(HaveOccurred())
+		controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes = append(controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes, fmt.Sprintf("valid%d", i+1))
+
 		// Make 3 snapshots of each
 		for j := 1; j < 4; j++ {
 			snap, err := controller.CreateSnapshot(context.TODO(), createTestSnapshotRequestWithArgs(fmt.Sprintf("snap%d", 3*i+j), fmt.Sprintf("valid%d", i+1)))
@@ -1406,6 +1345,78 @@ func createControllerServer(dataDir string) *hostPathController {
 		NodeID:             "test_node",
 		StoragePoolDataDir: map[string]string{legacyStoragePoolName: dataDir},
 	}
-	return NewHostPathController(&config)
+	controller := NewHostPathController(&config)
+	controller.snapshotprovider = &mockSnapshotprovider{}
+	return controller
 
+}
+
+type mockSnapshotprovider struct {
+	snapshots     []csi.Snapshot
+	sourceVolumes []string
+}
+
+func (m *mockSnapshotprovider) Initialize() error {
+	m.sourceVolumes = append(m.sourceVolumes, validVolId)
+
+	return nil
+}
+
+func (m *mockSnapshotprovider) GetSnapshotById(snapshotId string) (*csi.Snapshot, error) {
+	for _, snap := range m.snapshots {
+		if snap.GetSnapshotId() == snapshotId {
+			return &snap, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockSnapshotprovider) GetSnapshotsByVolumeSourceId(volumeSourceId string) ([]csi.Snapshot, error) {
+	res := make([]csi.Snapshot, 0)
+	for _, snap := range m.snapshots {
+		if snap.GetSourceVolumeId() == volumeSourceId {
+			res = append(res, snap)
+		}
+	}
+	return res, nil
+}
+
+func (m *mockSnapshotprovider) GetAllSnapshots() ([]csi.Snapshot, error) {
+	return m.snapshots, nil
+}
+
+func (m *mockSnapshotprovider) CreateSnapshot(snapshotId, sourceVolumeId string) (*csi.Snapshot, error) {
+	sourceFound := false
+	for _, source := range m.sourceVolumes {
+		if source == sourceVolumeId {
+			sourceFound = true
+		}
+	}
+	if !sourceFound {
+		return nil, fmt.Errorf("source volume not found, unable to create snapshot")
+	}
+	snapshot := csi.Snapshot{
+		SnapshotId:     snapshotId,
+		SourceVolumeId: sourceVolumeId,
+		ReadyToUse:     true,
+		SizeBytes:      19,
+		CreationTime:   timestamppb.New(time.Now()),
+	}
+	m.snapshots = append(m.snapshots, snapshot)
+	return &snapshot, nil
+}
+
+func (m *mockSnapshotprovider) DeleteSnapshot(snapshotId string) error {
+	res := make([]csi.Snapshot, 0)
+	for _, snap := range m.snapshots {
+		if snap.GetSnapshotId() != snapshotId {
+			res = append(res, snap)
+		}
+	}
+	m.snapshots = res
+	return nil
+}
+
+func (m *mockSnapshotprovider) RestoreSnapshot(snapshotId, targetPath string) error {
+	return nil
 }

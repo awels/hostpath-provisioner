@@ -34,7 +34,6 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/exec"
 )
 
 const (
@@ -43,13 +42,20 @@ const (
 )
 
 type hostPathController struct {
-	cfg       *Config
-	snapMutex sync.Mutex
+	cfg              *Config
+	snapshotprovider SnapshotProvider
+	snapMutex        sync.Mutex
 }
 
 func NewHostPathController(config *Config) *hostPathController {
 	return &hostPathController{
 		cfg: config,
+		snapshotprovider: &Restic{
+			reponame:   config.SnapshotDir,
+			pwdFile:    config.SnapshotRepoPasswordFile,
+			sourcebase: config.DataDir,
+			nodeName:   config.NodeID,
+		},
 	}
 }
 
@@ -164,23 +170,6 @@ func (hpc *hostPathController) getVolumeDirCapacity(path string) (int64, error) 
 	}
 	capacity, _ = resource.NewQuantity(int64(roundDownCapacityPretty(capacity)), resource.BinarySI).AsInt64()
 	return capacity, nil
-}
-
-func (hpc *hostPathController) getSnapshotContentSize(snapName, sourceVolumeId string) (int64, error) {
-
-	snapshotFile := filepath.Join(hpc.cfg.SnapshotDir, snapName, fmt.Sprintf("%s.tar.std", sourceVolumeId))
-	cmd := []string{"bash", "-c", fmt.Sprintf("tar -tv --zstd -f %s | sed 's/ \\+/ /g' | cut -f3 -d' ' | sed '2,$s/^/+ /' | paste -sd' ' | bc", snapshotFile)}
-	executor := exec.New()
-	klog.V(1).Infof("Executing %v", cmd)
-	out, err := executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
-	if err != nil {
-		return int64(0), fmt.Errorf("failed to determine restore size needed: %v, %s", err, out)
-	}
-	sizeString := strings.TrimSpace(string(out))
-	if sizeString == "" {
-		sizeString = "0"
-	}
-	return strconv.ParseInt(sizeString, 10, 64)
 }
 
 func (hpc *hostPathController) validateDeleteVolumeRequest(req *csi.DeleteVolumeRequest) error {
@@ -429,58 +418,43 @@ func (hpc *hostPathController) validateCreateSnapshotRequest(req *csi.CreateSnap
 	return nil
 }
 
-func (hpc *hostPathController) createSnapshotResponseFromFile(req *csi.CreateSnapshotRequest, file string) (*csi.CreateSnapshotResponse, error) {
-	// Found the file, return information about it.
-	if _, err := os.Stat(file); err != nil {
-		return nil, err
-	} else {
-		snap := hpc.createSnapshotObject(req.GetName(), req.GetSourceVolumeId(), file)
-		return &csi.CreateSnapshotResponse{
-			Snapshot: snap,
-		}, nil
-	}
-}
-
 func (hpc *hostPathController) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
 	if err := hpc.validateCreateSnapshotRequest(req); err != nil {
 		return nil, err
 	}
 	hpc.snapMutex.Lock()
 	defer hpc.snapMutex.Unlock()
-	snapPath := filepath.Join(hpc.cfg.SnapshotDir, req.GetName())
-	// Make sure the directory exists.
-	if exists, err := checkPathExist(snapPath); err != nil {
+	if exists, err := checkPathExist(hpc.cfg.SnapshotDir); err != nil {
 		return nil, err
 	} else if !exists {
-		if err := CreateSnapshotDirectory(hpc.cfg.SnapshotDir, req.GetName()); err != nil {
-			return nil, fmt.Errorf("failed to create snapshot directory %v: %w", req.GetName(), err)
+		if err := hpc.snapshotprovider.Initialize(); err != nil {
+			return nil, fmt.Errorf("failed to create snapshot repo %v", err)
 		}
-		klog.V(4).Infof("created snapshot directory %s", snapPath)
+		klog.V(4).Info("Initialized snapshot provider")
 	}
-	// Check if there is a snapshot file in the directory.
-	volumeSnapshotFile := filepath.Join(snapPath, fmt.Sprintf("%s%s", req.GetSourceVolumeId(), snapExt))
-	if isEmpty, err := checkPathIsEmpty(snapPath); err != nil {
-		return nil, err
-	} else if !isEmpty {
-		// Not empty, check if volume source matches
-		if exists, err := checkPathExist(volumeSnapshotFile); err != nil {
-			return nil, err
-		} else if !exists {
-			// Found a different file, already exists.
-			return nil, status.Errorf(codes.AlreadyExists, "snapshot with the same name: %s but with different SourceVolumeId already exist", req.GetName())
-		} else {
-			return hpc.createSnapshotResponseFromFile(req, volumeSnapshotFile)
-		}
-	}
-	// File not there, create it.
-	cmd := []string{"tar", "-c", "--zstd", "-f", volumeSnapshotFile, "-C", filepath.Join(hpc.cfg.DataDir, req.GetSourceVolumeId()), "."}
-	executor := exec.New()
-	out, err := executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
+	// Check if a snapshot with the tag already exists.
+	snapshot, err := hpc.snapshotprovider.GetSnapshotById(req.GetName())
 	if err != nil {
-		return nil, fmt.Errorf("failed create snapshot: %w: %s", err, out)
+		return nil, err
 	}
-	// Successfully create snapshot.
-	return hpc.createSnapshotResponseFromFile(req, volumeSnapshotFile)
+	if snapshot != nil {
+		// Snapshot already exists, check if the source volumes match.
+		if snapshot.GetSourceVolumeId() == req.GetSourceVolumeId() {
+			return &csi.CreateSnapshotResponse{
+				Snapshot: snapshot,
+			}, err
+		} else {
+			return nil, status.Errorf(codes.AlreadyExists, "snapshot with the same name: %s but with different SourceVolumeId already exist", req.GetName())
+		}
+	}
+	// Snapshot not found, create it.
+	snapshot, err = hpc.snapshotprovider.CreateSnapshot(req.GetName(), req.GetSourceVolumeId())
+	if err != nil {
+		return nil, err
+	}
+	return &csi.CreateSnapshotResponse{
+		Snapshot: snapshot,
+	}, err
 }
 
 func (hpc *hostPathController) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
@@ -492,8 +466,7 @@ func (hpc *hostPathController) DeleteSnapshot(ctx context.Context, req *csi.Dele
 	}
 	hpc.snapMutex.Lock()
 	defer hpc.snapMutex.Unlock()
-	snapPath := filepath.Join(hpc.cfg.SnapshotDir, req.GetSnapshotId())
-	if err := os.RemoveAll(snapPath); err != nil {
+	if err := hpc.snapshotprovider.DeleteSnapshot(req.GetSnapshotId()); err != nil {
 		return nil, err
 	}
 	return &csi.DeleteSnapshotResponse{}, nil
@@ -543,51 +516,28 @@ func (hpc *hostPathController) createSnapshotObjectFromDir(path string) *csi.Sna
 
 func (hpc *hostPathController) getSnapshotFromId(snapshotId string) []csi.Snapshot {
 	res := make([]csi.Snapshot, 0)
-	snapshot := hpc.createSnapshotObjectFromDir(filepath.Join(hpc.cfg.SnapshotDir, snapshotId))
-	if snapshot != nil {
+	if snapshot, err := hpc.snapshotprovider.GetSnapshotById(snapshotId); err != nil {
+		return res
+	} else if snapshot != nil {
 		res = append(res, *snapshot)
 	}
 	return res
 }
 
 func (hpc *hostPathController) getSnapshotsFromSourceVolumeId(sourceVolumeId string) []csi.Snapshot {
-	return hpc.getSnapshotsWithFilter(func(fileName string) bool {
-		return strings.ReplaceAll(filepath.Base(fileName), snapExt, "") == sourceVolumeId
+	snapshots, _ := hpc.snapshotprovider.GetSnapshotsByVolumeSourceId(sourceVolumeId)
+	sort.Slice(snapshots, func(i, j int) bool {
+		return strings.Compare(snapshots[i].SnapshotId, snapshots[j].SnapshotId) == -1
 	})
+	return snapshots
 }
 
 func (hpc *hostPathController) getAllSnapshots() []csi.Snapshot {
-	return hpc.getSnapshotsWithFilter(func(fileName string) bool {
-		return true
+	snapshots, _ := hpc.snapshotprovider.GetAllSnapshots()
+	sort.Slice(snapshots, func(i, j int) bool {
+		return strings.Compare(snapshots[i].SnapshotId, snapshots[j].SnapshotId) == -1
 	})
-}
-
-func (hpc *hostPathController) getSnapshotsWithFilter(filterFunc func(string) bool) []csi.Snapshot {
-	res := make([]csi.Snapshot, 0)
-	err := filepath.Walk(hpc.cfg.SnapshotDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if strings.HasSuffix(path, snapExt) && filterFunc(path) {
-			// ignore error, we can't do anything about it here.
-			snapshotObject := hpc.createSnapshotObject(filepath.Base(filepath.Dir(path)), strings.ReplaceAll(filepath.Base(path), snapExt, ""), path)
-			if snapshotObject != nil {
-				res = append(res, *snapshotObject)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil
-	}
-	sort.Slice(res, func(i, j int) bool {
-		return strings.Compare(res[i].SnapshotId, res[j].SnapshotId) == -1
-	})
-
-	return res
+	return snapshots
 }
 
 func (hpc *hostPathController) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
@@ -650,20 +600,7 @@ func (hpc *hostPathController) restoreFromSnapshot(snapshotId, targetVolume stri
 	hpc.snapMutex.Lock()
 	defer hpc.snapMutex.Unlock()
 
-	snapshotPath := filepath.Join(hpc.cfg.SnapshotDir, snapshotId)
-	snapshot := hpc.createSnapshotObjectFromDir(snapshotPath)
-	if snapshot == nil {
-		return status.Errorf(codes.NotFound, "failed to restore snapshot %s to volume %s", snapshotId, targetVolume)
-	}
-	snapshotFile := filepath.Join(snapshotPath, fmt.Sprintf("%s.tar.std", snapshot.SourceVolumeId))
-	destPath := filepath.Join(hpc.cfg.DataDir, targetVolume)
-	cmd := []string{"tar", "-x", "--zstd", "-f", snapshotFile, "-C", destPath}
-	executor := exec.New()
-	out, err := executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to restore snapshot %s to volume %s: %w: %s", snapshotId, targetVolume, err, out)
-	}
-	return nil
+	return hpc.snapshotprovider.RestoreSnapshot(snapshotId, targetVolume)
 }
 
 func (hpc *hostPathController) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
