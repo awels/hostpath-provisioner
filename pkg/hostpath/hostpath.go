@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"golang.org/x/net/context"
@@ -38,15 +37,13 @@ const (
 )
 
 type Config struct {
-	DriverName               string
-	Endpoint                 string
-	NodeID                   string
-	StoragePoolDataDir       map[string]string
-	SnapshotDir              string
-	DefaultStoragePoolName   string
-	Version                  string
-	Mounter                  mount.Interface
-	SnapshotRepoPasswordFile string
+	DriverName             string
+	Endpoint               string
+	NodeID                 string
+	StoragePoolInfo        map[string]StoragePoolInfo
+	DefaultStoragePoolName string
+	Version                string
+	Mounter                mount.Interface
 }
 
 type hostPath struct {
@@ -74,57 +71,38 @@ func NewHostPathDriver(ctx context.Context, cfg *Config, dataDir string) (*hostP
 	if cfg.Mounter == nil {
 		cfg.Mounter = mount.New("")
 	}
-	cfg.StoragePoolDataDir = make(map[string]string)
-	if cfg.SnapshotRepoPasswordFile == "" {
-		cfg.SnapshotRepoPasswordFile = filepath.Join(cfg.DataDir, "pwd.txt")
-		f, err := os.Create(cfg.SnapshotRepoPasswordFile)
-		if err != nil {
-			return nil, err
-		}
-		_, err = f.WriteString("test-password")
-		if err != nil {
-			return nil, err
-		}
-		err = f.Sync()
-		if err != nil {
-			return nil, err
-		}
-		//return nil, errors.New("no snapshot repo password file provided")
-	}
 
 	storagePools := make([]StoragePoolInfo, 0)
 	if err := json.Unmarshal([]byte(dataDir), &storagePools); err != nil {
 		return nil, errors.New("unable to parse storage pool info")
 	}
-	for storagePool := range storagePools {
+	cfg.StoragePoolInfo = make(map[string]StoragePoolInfo)
+	for _, storagePool := range storagePools {
 		if len(cfg.DefaultStoragePoolName) == 0 {
 			cfg.DefaultStoragePoolName = storagePool.Name
 		}
-		cfg.StoragePoolDataDir[storagePool.Name] = storagePool.Path
+		cfg.StoragePoolInfo[storagePool.Name] = storagePool
 	}
 
-	for k, v := range cfg.StoragePoolDataDir {
-		klog.V(1).Infof("name: %s, dataDir: %s", k, v)
-		if err := os.MkdirAll(v, 0750); err != nil {
+	for k, v := range cfg.StoragePoolInfo {
+		klog.V(1).Infof("name: %s, dataDir: %s", k, v.Path)
+		if err := os.MkdirAll(v.Path, 0750); err != nil {
 			return nil, fmt.Errorf("failed to create dataRoot for storage pool %s: %v", k, err)
 		}
 	}
 
 	go func() {
-		evaluateSharedPathMetric(cfg.StoragePoolDataDir)
+		evaluateSharedPathMetric(cfg.StoragePoolInfo)
 		// Run this every minute so we catch the current state in metric (imagine people remounting on their own)
 		for {
 			select {
 			case <-time.After(1 * time.Minute):
-				evaluateSharedPathMetric(cfg.StoragePoolDataDir)
+				evaluateSharedPathMetric(cfg.StoragePoolInfo)
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
-
-	// TODO: Integrate with storage pools
-	cfg.SnapshotDir = filepath.Join(cfg.DataDir, "snapshot")
 
 	klog.V(1).Infof("Driver: %s, version: %s ", cfg.DriverName, cfg.Version)
 

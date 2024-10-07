@@ -20,9 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/utils/ptr"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 )
@@ -172,7 +173,7 @@ func Test_CreateVolumeInvalidRequest(t *testing.T) {
 
 func Test_CreateVolumeValidDoesNotExist(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -213,7 +214,7 @@ func Test_CreateVolumeValidDoesNotExist(t *testing.T) {
 
 func Test_CreateVolumeFromSnapshot(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -228,7 +229,7 @@ func Test_CreateVolumeFromSnapshot(t *testing.T) {
 	Expect(len(resp.Volume.AccessibleTopology)).To(Equal(1))
 	Expect(resp.Volume.AccessibleTopology[0]).ToNot(BeNil())
 	Expect(resp.Volume.AccessibleTopology[0].Segments[TopologyKeyNode]).To(Equal("test_node"))
-	controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes = append(controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes, resp.Volume.VolumeId)
+	controller.snapshotproviders[legacyStoragePoolName].(*mockSnapshotprovider).sourceVolumes = append(controller.snapshotproviders[legacyStoragePoolName].(*mockSnapshotprovider).sourceVolumes, resp.Volume.VolumeId)
 	res, err := controller.CreateSnapshot(context.TODO(), createTestSnapshotRequestWithArgs(validSnapshotName, resp.Volume.VolumeId))
 	Expect(err).ToNot(HaveOccurred())
 	Expect(res.Snapshot).ToNot(BeNil())
@@ -319,7 +320,7 @@ func Test_validateDeleteVolumeRequest(t *testing.T) {
 
 func Test_DeleteVolumeRequest(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -418,7 +419,7 @@ func Test_ControllerGetCapabilities(t *testing.T) {
 
 func Test_ValidateVolumeCapabilities(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -536,7 +537,7 @@ func Test_ControllerUnpublishVolume(t *testing.T) {
 
 func Test_GetCapacityRequest(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -557,7 +558,7 @@ func Test_GetCapacityRequest(t *testing.T) {
 
 func Test_GetCapacityRequestPVStatError(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -583,7 +584,7 @@ func Test_getVolumeDirectoriesFail(t *testing.T) {
 
 func Test_getVolumeDirectories(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -640,11 +641,11 @@ func Test_validateListVolumesRequest(t *testing.T) {
 }
 func Test_ListVolumes(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
-	for i := 1; i < 10; i++ {
-		err = os.Mkdir(filepath.Join(tempDir, fmt.Sprintf("dir%d", i)), 0666)
+	for i := 0; i < 9; i++ {
+		err = os.Mkdir(filepath.Join(tempDir, strconv.Itoa(i)), 0666)
 		Expect(err).ToNot(HaveOccurred())
 	}
 	controller := createControllerServer(tempDir)
@@ -681,7 +682,7 @@ func Test_ListVolumes(t *testing.T) {
 			Expect(entry.Status.VolumeCondition).ToNot(BeNil())
 			Expect(entry.Status.VolumeCondition.Abnormal).To(BeFalse())
 		}
-		Expect(resp.GetNextToken()).To(Equal("5"))
+		Expect(resp.GetNextToken()).To(Equal("4"))
 	})
 
 	t.Run("start at 3rd entry request max result 1", func(t *testing.T) {
@@ -719,7 +720,7 @@ func Test_ListVolumes(t *testing.T) {
 					StartingToken: resp.GetNextToken(),
 				})
 				Expect(err).ToNot(HaveOccurred())
-				Expect(len(resp.Entries)).To(Equal(3))
+				Expect(len(resp.Entries)).To(Equal(2))
 				Expect(resp.GetNextToken()).To(BeEmpty())
 				for _, entry := range resp.Entries {
 					Expect(entry.Volume.CapacityBytes).To(BeNumerically(">", 0))
@@ -735,7 +736,7 @@ func Test_ListVolumes(t *testing.T) {
 			MaxEntries:    3,
 			StartingToken: invalidVolId,
 		})
-		Expect(err).To(BeEquivalentTo(status.Error(codes.Aborted, "The type of startingToken should be integer")))
+		Expect(err).To(BeEquivalentTo(status.Error(codes.Aborted, "the type of startingToken should be integer")))
 	})
 
 	t.Run("blank starting token, no max", func(t *testing.T) {
@@ -771,7 +772,7 @@ func Test_ListVolumes(t *testing.T) {
 
 func Test_ListVolumesNonEmptyStartTokenNoVolumes(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -785,7 +786,7 @@ func Test_ListVolumesNonEmptyStartTokenNoVolumes(t *testing.T) {
 	_, err = controller.ListVolumes(context.TODO(), &csi.ListVolumesRequest{
 		StartingToken: "invalid_token",
 	})
-	Expect(err).To(BeEquivalentTo(status.Errorf(codes.Aborted, "volume %s not found", "invalid_token")))
+	Expect(err).To(BeEquivalentTo(status.Error(codes.Aborted, "the type of startingToken should be integer")))
 }
 func Test_ListVolumesErrorStat(t *testing.T) {
 	RegisterTestingT(t)
@@ -820,7 +821,7 @@ func Test_ListVolumesErrorGetVolumeDirectories(t *testing.T) {
 
 func Test_ControllerGetVolume(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -869,7 +870,7 @@ func Test_ControllerGetVolumeError(t *testing.T) {
 
 func Test_ValidateCreateSnapshotRequest(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -921,7 +922,7 @@ func Test_CreateSnapshotCheckPathError(t *testing.T) {
 
 func Test_CreateSnapshotSourceNotFound(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
@@ -943,26 +944,26 @@ func Test_CreateSnapshotSourceNotFound(t *testing.T) {
 
 func Test_CreateSnapshotCheckPathIsEmptyNotEmptyOther(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
-	controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes = append(controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes, invalidVolId)
-	err = os.MkdirAll(filepath.Join(controller.cfg.SnapshotDir, validSnapshotName), 0755)
+	controller.snapshotproviders[legacyStoragePoolName].(*mockSnapshotprovider).sourceVolumes = append(controller.snapshotproviders[legacyStoragePoolName].(*mockSnapshotprovider).sourceVolumes, invalidVolId)
+	err = os.MkdirAll(filepath.Join(*controller.cfg.StoragePoolInfo[legacyStoragePoolName].SnapshotPath, validSnapshotName), 0755)
 	Expect(err).ToNot(HaveOccurred())
-	err = os.MkdirAll(filepath.Join(controller.cfg.DataDir, invalidVolId), 0755)
+	err = os.MkdirAll(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, invalidVolId), 0755)
 	Expect(err).ToNot(HaveOccurred())
 
-	f, err := os.Create(filepath.Join(controller.cfg.DataDir, invalidVolId, "test.file"))
+	f, err := os.Create(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, invalidVolId, "test.file"))
 	Expect(err).ToNot(HaveOccurred())
 	defer f.Close()
 	_, err = f.WriteString(fileContent)
 	Expect(err).ToNot(HaveOccurred())
 
-	err = controller.snapshotprovider.Initialize()
+	err = controller.snapshotproviders[legacyStoragePoolName].Initialize()
 	Expect(err).ToNot(HaveOccurred())
 
-	_, err = controller.snapshotprovider.CreateSnapshot(validSnapshotName, invalidVolId)
+	_, err = controller.snapshotproviders[legacyStoragePoolName].CreateSnapshot(validSnapshotName, invalidVolId)
 	Expect(err).ToNot(HaveOccurred())
 
 	_, err = controller.CreateSnapshot(context.TODO(), createTestSnapshotRequest())
@@ -971,13 +972,13 @@ func Test_CreateSnapshotCheckPathIsEmptyNotEmptyOther(t *testing.T) {
 
 func Test_CreateSnapshot(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
-	err = os.MkdirAll(filepath.Join(controller.cfg.DataDir, validVolId), 0755)
+	err = os.MkdirAll(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, validVolId), 0755)
 	Expect(err).ToNot(HaveOccurred())
-	f, err := os.Create(filepath.Join(controller.cfg.DataDir, validVolId, "test.file"))
+	f, err := os.Create(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, validVolId, "test.file"))
 	Expect(err).ToNot(HaveOccurred())
 	defer f.Close()
 	_, err = f.WriteString(fileContent)
@@ -1020,11 +1021,11 @@ func Test_ValidateDeleteSnapshotRequest(t *testing.T) {
 
 func Test_DeleteSnapshotNotThere(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
-	err = controller.snapshotprovider.Initialize()
+	err = controller.snapshotproviders[legacyStoragePoolName].Initialize()
 	Expect(err).ToNot(HaveOccurred())
 
 	res, err := controller.DeleteSnapshot(context.TODO(), &csi.DeleteSnapshotRequest{
@@ -1036,13 +1037,13 @@ func Test_DeleteSnapshotNotThere(t *testing.T) {
 
 func Test_DeleteSnapshot(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
-	err = os.MkdirAll(filepath.Join(controller.cfg.DataDir, validVolId), 0755)
+	err = os.MkdirAll(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, validVolId), 0755)
 	Expect(err).ToNot(HaveOccurred())
-	f, err := os.Create(filepath.Join(controller.cfg.DataDir, validVolId, "test.file"))
+	f, err := os.Create(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, validVolId, "test.file"))
 	Expect(err).ToNot(HaveOccurred())
 	defer f.Close()
 	_, err = f.WriteString(fileContent)
@@ -1074,13 +1075,13 @@ func Test_ListSnapshotsMissingRequest(t *testing.T) {
 
 func Test_ListSnapshotFromSnapshotId(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
-	err = os.MkdirAll(filepath.Join(controller.cfg.DataDir, validVolId), 0755)
+	err = os.MkdirAll(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, validVolId), 0755)
 	Expect(err).ToNot(HaveOccurred())
-	_, err = os.Create(filepath.Join(controller.cfg.DataDir, validVolId, "test.file"))
+	_, err = os.Create(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, validVolId, "test.file"))
 	Expect(err).ToNot(HaveOccurred())
 
 	// Creating snapshot, so we can list it
@@ -1106,13 +1107,13 @@ func Test_ListSnapshotFromSnapshotId(t *testing.T) {
 
 func Test_ListSnapshotsFromVolumeSourceId(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
-	err = os.MkdirAll(filepath.Join(controller.cfg.DataDir, validVolId), 0755)
+	err = os.MkdirAll(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, validVolId), 0755)
 	Expect(err).ToNot(HaveOccurred())
-	_, err = os.Create(filepath.Join(controller.cfg.DataDir, validVolId, "test.file"))
+	_, err = os.Create(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, validVolId, "test.file"))
 	Expect(err).ToNot(HaveOccurred())
 
 	snaps := make(map[string]csi.Snapshot)
@@ -1172,18 +1173,18 @@ func Test_ListSnapshotsFromVolumeSourceId(t *testing.T) {
 
 func Test_ListAllSnapshots(t *testing.T) {
 	RegisterTestingT(t)
-	tempDir, err := ioutil.TempDir(os.TempDir(), "")
+	tempDir, err := os.MkdirTemp(os.TempDir(), "")
 	Expect(err).ToNot(HaveOccurred())
 	defer os.RemoveAll(tempDir)
 	controller := createControllerServer(tempDir)
 	snaps := make(map[string]csi.Snapshot)
 	// Create 3 volumes
 	for i := 0; i < 3; i++ {
-		err = os.MkdirAll(filepath.Join(controller.cfg.DataDir, fmt.Sprintf("valid%d", i+1)), 0755)
+		err = os.MkdirAll(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, fmt.Sprintf("valid%d", i+1)), 0755)
 		Expect(err).ToNot(HaveOccurred())
-		_, err = os.Create(filepath.Join(controller.cfg.DataDir, fmt.Sprintf("valid%d", i+1), "test.file"))
+		_, err = os.Create(filepath.Join(controller.cfg.StoragePoolInfo[legacyStoragePoolName].Path, fmt.Sprintf("valid%d", i+1), "test.file"))
 		Expect(err).ToNot(HaveOccurred())
-		controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes = append(controller.snapshotprovider.(*mockSnapshotprovider).sourceVolumes, fmt.Sprintf("valid%d", i+1))
+		controller.snapshotproviders[legacyStoragePoolName].(*mockSnapshotprovider).sourceVolumes = append(controller.snapshotproviders[legacyStoragePoolName].(*mockSnapshotprovider).sourceVolumes, fmt.Sprintf("valid%d", i+1))
 
 		// Make 3 snapshots of each
 		for j := 1; j < 4; j++ {
@@ -1285,7 +1286,7 @@ func Test_ListAllSnapshots(t *testing.T) {
 			MaxEntries:    3,
 			StartingToken: invalidVolId,
 		})
-		Expect(err).To(BeEquivalentTo(status.Error(codes.Aborted, "The type of startingToken should be integer")))
+		Expect(err).To(BeEquivalentTo(status.Error(codes.Aborted, "the type of startingToken should be integer")))
 	})
 
 	t.Run("blank starting token, no max", func(t *testing.T) {
@@ -1337,16 +1338,21 @@ func createTestSnapshotRequestWithArgs(name, volId string) *csi.CreateSnapshotRe
 }
 
 func createControllerServer(dataDir string) *hostPathController {
+	testPoolInfo := make(map[string]StoragePoolInfo)
+	testPoolInfo[legacyStoragePoolName] = StoragePoolInfo{
+		Name:             legacyStoragePoolName,
+		Path:             dataDir,
+		SnapshotPath:     ptr.To[string](filepath.Join(dataDir, "snap")),
+		SnapshotProvider: ptr.To[SnapshotProviderType](ReflinkProvider),
+	}
 	config := Config{
-		DriverName:         "test_driver",
-		Version:            "test_version",
-		DataDir:            dataDir,
-		SnapshotDir:        filepath.Join(dataDir, "snap"),
-		NodeID:             "test_node",
-		StoragePoolDataDir: map[string]string{legacyStoragePoolName: dataDir},
+		DriverName:      "test_driver",
+		Version:         "test_version",
+		StoragePoolInfo: testPoolInfo,
+		NodeID:          "test_node",
 	}
 	controller := NewHostPathController(&config)
-	controller.snapshotprovider = &mockSnapshotprovider{}
+	controller.snapshotproviders[legacyStoragePoolName] = &mockSnapshotprovider{}
 	return controller
 
 }

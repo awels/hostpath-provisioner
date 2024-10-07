@@ -33,63 +33,46 @@ import (
 )
 
 type SnapshotMeta struct {
-	Time  string `json:"time"`
-	Parent  string `json:"parent"`
-	Tree  string `json:"tree"`
-	Paths []string `json:"paths"`
-	Hostname string `json:"hostname"`
-	Username string `json:"username"`
-	Uid uint `json:"uid"`
-	Gid uint `json:"gid"`
-	Tags []string `json:"tags"`
-	Id string `json:"id"`
-	ShortId string `json:"short_id"`
+	Time     string   `json:"time"`
+	Parent   string   `json:"parent"`
+	Tree     string   `json:"tree"`
+	Paths    []string `json:"paths"`
+	Hostname string   `json:"hostname"`
+	Username string   `json:"username"`
+	Uid      uint     `json:"uid"`
+	Gid      uint     `json:"gid"`
+	Tags     []string `json:"tags"`
+	Id       string   `json:"id"`
+	ShortId  string   `json:"short_id"`
 }
 
 type snapshotFile struct {
-    Name string `json:"name"`
-    Type string `json:"type"`
-    Path string `json:"path"`
-    Uid uint `json:"uid"`
-    Gid uint `json:"gid"`
-    Size int64 `json:"size"`
-    Mode uint `json:"mode"`
-    Modified string `json:"mtime"`
-    LastRead string `json:"atime"`
-    Created string `json:"ctime"`
-    StructTpe string `json:"struct_type"`
-}
-
-type SnapshotProvider interface {
-	// Initialize initialize the provider.
-	Initialize() error
-	// GetSnapshotById gets the snapshot meta data of the specified snapshot id.
-	GetSnapshotById(snapshotId string) (*csi.Snapshot, error)
-	// GetSnapshotsByVolumeSourceId gets the snapshot meta data of the snapshots associated with the volume source id. All snapshots of a volume
-	GetSnapshotsByVolumeSourceId(volumeSourceId string) ([]csi.Snapshot, error)
-	// GetAllSnapshots gets all the snapshot meta data
-	GetAllSnapshots() ([]csi.Snapshot, error)
-	// CreateSnapshot creates a snapshot.
-	CreateSnapshot(snapshotId, sourceVolumeId string) (*csi.Snapshot, error)
-	// DeleteSnapshot removes a snapshot
-	DeleteSnapshot(snapshotId string) error
-	// RestoreSnapshot restores the content of the snapshot into the target path
-	RestoreSnapshot(snapshotId, targetPath string) error 
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Path      string `json:"path"`
+	Uid       uint   `json:"uid"`
+	Gid       uint   `json:"gid"`
+	Size      int64  `json:"size"`
+	Mode      uint   `json:"mode"`
+	Modified  string `json:"mtime"`
+	LastRead  string `json:"atime"`
+	Created   string `json:"ctime"`
+	StructTpe string `json:"struct_type"`
 }
 
 type Restic struct {
-	reponame string
-	pwdFile string
+	repoName   string
+	pwdFile    string
 	sourcebase string
-	nodeName string
+	nodeName   string
 }
 
 func (r *Restic) Initialize() error {
-	cmd := []string{"restic", "init", "--password-file", r.pwdFile, "--repo", r.reponame}
+	cmd := []string{"restic", "init", "--password-file", r.pwdFile, "--repo", r.repoName}
 	executor := exec.New()
 	out, err := executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("error %s, %v",string(out), err)
+		return fmt.Errorf("error %s, %v", string(out), err)
 	}
 	klog.V(1).Info("Successfully created snapshot repo")
 	return nil
@@ -121,7 +104,7 @@ func (r *Restic) GetAllSnapshots() ([]csi.Snapshot, error) {
 	return r.getSnapshotsWithArgs()
 }
 
-func (r *Restic) getSnapshotsWithArgs(extraArgs...string) ([]csi.Snapshot, error) {
+func (r *Restic) getSnapshotsWithArgs(extraArgs ...string) ([]csi.Snapshot, error) {
 	snapshots := make([]csi.Snapshot, 0)
 	snapshotMetas, err := r.getSnapshotMetasWithArgs(extraArgs...)
 	if err != nil {
@@ -137,8 +120,8 @@ func (r *Restic) getSnapshotsWithArgs(extraArgs...string) ([]csi.Snapshot, error
 	return snapshots, nil
 }
 
-func (r *Restic) getSnapshotMetasWithArgs(extraArgs...string) ([]SnapshotMeta, error) {
-	cmd := []string{"restic", "snapshots", "--password-file", r.pwdFile, "--repo", r.reponame, "--json"}
+func (r *Restic) getSnapshotMetasWithArgs(extraArgs ...string) ([]SnapshotMeta, error) {
+	cmd := []string{"restic", "snapshots", "--password-file", r.pwdFile, "--repo", r.repoName, "--json"}
 	cmd = append(cmd, extraArgs...)
 	executor := exec.New()
 	out, err := executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
@@ -153,7 +136,7 @@ func (r *Restic) getSnapshotMetasWithArgs(extraArgs...string) ([]SnapshotMeta, e
 }
 
 func (r *Restic) getSnapshotSizeFromMeta(meta *SnapshotMeta) (int64, error) {
-	cmd := []string{"restic", "ls", "-l", "--password-file", r.pwdFile, "--repo", r.reponame, "--json", meta.Id}
+	cmd := []string{"restic", "ls", "-l", "--password-file", r.pwdFile, "--repo", r.repoName, "--json", meta.Id}
 	executor := exec.New()
 	out, err := executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
 	if err != nil {
@@ -182,7 +165,7 @@ func (r *Restic) CreateSnapshot(snapshotId, sourceVolumeId string) (*csi.Snapsho
 	if exists, err := checkPathExist(sourceDir); err != nil {
 		return nil, err
 	} else if exists {
-		cmd := []string{"restic", "--password-file", r.pwdFile, "--repo", r.reponame, "--tag", snapshotId, "backup", sourceDir}
+		cmd := []string{"restic", "--password-file", r.pwdFile, "--repo", r.repoName, "--tag", snapshotId, "backup", sourceDir}
 		executor := exec.New()
 		out, err := executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
 		if err != nil {
@@ -203,7 +186,7 @@ func (r *Restic) CreateSnapshot(snapshotId, sourceVolumeId string) (*csi.Snapsho
 
 func (r *Restic) tagSnapshotWithNode(meta *SnapshotMeta) (string, error) {
 	handle := fmt.Sprintf("%s-%s", r.nodeName, meta.ShortId)
-	cmd := []string{"restic", "--password-file", r.pwdFile, "--repo", r.reponame, "tag", "--add", handle}
+	cmd := []string{"restic", "--password-file", r.pwdFile, "--repo", r.repoName, "tag", "--add", handle}
 	executor := exec.New()
 	out, err := executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
 	if err != nil {
@@ -218,7 +201,7 @@ func (r *Restic) DeleteSnapshot(snapshotId string) error {
 		return err
 	}
 	if meta != nil {
-		cmd := []string{"restic", "--password-file", r.pwdFile, "--repo", r.reponame, "forget", meta.Id}
+		cmd := []string{"restic", "--password-file", r.pwdFile, "--repo", r.repoName, "forget", meta.Id}
 		executor := exec.New()
 		out, err := executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
 		if err != nil {
@@ -232,7 +215,7 @@ func (r *Restic) RestoreSnapshot(snapshotId, targetPath string) error {
 	if meta, err := r.getSnapshotMetaById(snapshotId); err != nil {
 		return err
 	} else if meta != nil {
-		cmd := []string{"restic", "--password-file", r.pwdFile, "--repo", r.reponame, "--target", targetPath, "restore", meta.Id}
+		cmd := []string{"restic", "--password-file", r.pwdFile, "--repo", r.repoName, "--target", targetPath, "restore", meta.Id}
 		executor := exec.New()
 		out, err := executor.Command(cmd[0], cmd[1:]...).CombinedOutput()
 		if err != nil {
@@ -257,11 +240,10 @@ func (r *Restic) createSnapshotFromMeta(meta *SnapshotMeta) (*csi.Snapshot, erro
 		return nil, err
 	}
 	return &csi.Snapshot{
-		SnapshotId: meta.Tags[0],
+		SnapshotId:     meta.Tags[0],
 		SourceVolumeId: sourceVolumeId,
-		CreationTime: timestamppb.New(creationTime),
-		SizeBytes: size,
-		ReadyToUse: true,
+		CreationTime:   timestamppb.New(creationTime),
+		SizeBytes:      size,
+		ReadyToUse:     true,
 	}, nil
 }
-

@@ -1,4 +1,4 @@
-git /*
+/*
 Copyright 2021 The hostpath provisioner Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,13 +17,15 @@ package hostpath
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -34,18 +36,32 @@ import (
 
 const (
 	// The storagePool field name in the storage class arguments.
-	storagePoolName       = "storagePool"
-	legacyStoragePoolName = "legacy"
+	defaultStoragePoolName = "storagePool"
+	legacyStoragePoolName  = "legacy"
 )
 
 var (
 	csiSocketDir = "/csi"
+	// CreateVolumeDirectory allocates creates the directory for the hostpath volume
+	CreateVolumeDirectory = createVolumeDirectoryFunc
+	checkPathExist        = checkPathExistFunc
+	checkPathIsEmpty      = checkPathIsEmptyFunc
+	getFileCreationTime   = getFileCreationTimeFunc
+)
+
+type SnapshotProviderType string
+
+const (
+	ReflinkProvider SnapshotProviderType = "reflink"
+	KopiaProvider   SnapshotProviderType = "kopia"
 )
 
 // StoragePoolInfo contains the name and path of a storage pool.
 type StoragePoolInfo struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
+	Name             string                `json:"name"`
+	Path             string                `json:"path"`
+	SnapshotPath     *string               `json:"snapshotPath,omitempty"`
+	SnapshotProvider *SnapshotProviderType `json:"snapshotProvider,omitempty"`
 }
 
 // roundDownCapacityPretty Round down the capacity to an easy to read value. Blatantly stolen from here: https://github.com/kubernetes-incubator/external-storage/blob/master/local-volume/provisioner/pkg/discovery/discovery.go#L339
@@ -132,22 +148,22 @@ func checkPathExistFunc(path string) (bool, error) {
 }
 
 func getStoragePoolNameFromMap(params map[string]string) string {
-	if _, ok := params[storagePoolName]; ok {
-		return params[storagePoolName]
+	if _, ok := params[defaultStoragePoolName]; ok {
+		return params[defaultStoragePoolName]
 	}
 	return legacyStoragePoolName
 }
 
-func getVolumeDirectories(storagePoolDataDirs map[string]string) ([]string, error) {
+func getStoragePoolDataDirectories(storagePoolInfo map[string]StoragePoolInfo) ([]string, error) {
 	directories := make([]string, 0)
-	for _, path := range storagePoolDataDirs {
-		files, err := ioutil.ReadDir(path)
+	for _, info := range storagePoolInfo {
+		files, err := os.ReadDir(info.Path)
 		if err != nil {
 			return nil, err
 		}
 		for _, file := range files {
 			if file.IsDir() {
-				directories = append(directories, filepath.Join(path, file.Name()))
+				directories = append(directories, filepath.Join(info.Path, file.Name()))
 			}
 		}
 	}
@@ -228,12 +244,12 @@ func extractDeviceFromMountInfoSource(source string) string {
 	return source
 }
 
-func evaluateSharedPathMetric(storagePoolDataDir map[string]string) {
+func evaluateSharedPathMetric(storagePoolDataDir map[string]StoragePoolInfo) {
 	pathShared := false
 	for k, v := range storagePoolDataDir {
-		if checkVolumePathSharedWithOS(v) {
+		if checkVolumePathSharedWithOS(v.Path) {
 			pathShared = true
-			klog.V(1).Infof("pool (%s, %s), shares path with OS which can lead to node disk pressure", k, v)
+			klog.V(1).Infof("pool (%s, %s), shares path with OS which can lead to node disk pressure", k, v.Path)
 		}
 	}
 	if pathShared {
@@ -241,4 +257,28 @@ func evaluateSharedPathMetric(storagePoolDataDir map[string]string) {
 	} else {
 		metrics.SetPoolPathSharedWithOs(0)
 	}
+}
+
+func checkPathIsEmptyFunc(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	_, err = f.Readdirnames(1)
+	if err != io.EOF {
+		return false, err
+	}
+	return true, nil
+}
+
+func getFileCreationTimeFunc(file string) (*time.Time, error) {
+	var stat syscall.Stat_t
+	err := syscall.Stat(file, &stat)
+	if err != nil {
+		return nil, err
+	}
+	creationTime := time.Unix(stat.Ctim.Sec, 0)
+	return &creationTime, nil
 }
